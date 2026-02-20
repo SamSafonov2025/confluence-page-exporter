@@ -2,5 +2,8 @@
     "url": "https://your-domain.atlassian.net",
     "email": "useremail",
     "token": "api_token, https://confluence.atlassian.com/x/Vo71Nw",
-    "pageId": "000000"
+    "pageId": "000000",
+    "pageIds": ["000000", "111111"],
+    "format": "markdown",
+    "export_versions": true
 }
