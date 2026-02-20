@@ -30,6 +30,18 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+try:
+    import mammoth
+    _HAS_MAMMOTH = True
+except ImportError:
+    _HAS_MAMMOTH = False
+
+try:
+    import html2text
+    _HAS_HTML2TEXT = True
+except ImportError:
+    _HAS_HTML2TEXT = False
+
 # Matches: "base_name <version>.ext"
 # e.g. "request_config 0.1.5.1.json" → name="request_config", ver="0.1.5.1", ext="json"
 # e.g. "ФТ Подсистема обработки запросов к ТА 0.1.0.docx" → name="ФТ ...", ver="0.1.0", ext="docx"
@@ -45,6 +57,51 @@ logging.basicConfig(
 def parse_version(version_str: str) -> tuple[int, ...]:
     """Parse '0.1.5.1' into (0, 1, 5, 1) for proper numeric sorting."""
     return tuple(int(x) for x in version_str.split('.'))
+
+
+def convert_doc_to_md(doc_path: Path) -> str | None:
+    """Convert .doc/.docx to markdown text.
+
+    .docx — via mammoth (docx→html) + html2text (html→md).
+    .doc  — Confluence exports are HTML-based, converted via html2text directly.
+    Returns None if the required libraries are missing or conversion fails.
+    """
+    suffix = doc_path.suffix.lower()
+    try:
+        if suffix == '.docx':
+            if not _HAS_MAMMOTH or not _HAS_HTML2TEXT:
+                return None
+            with open(doc_path, 'rb') as f:
+                html = mammoth.convert_to_html(f).value
+        elif suffix == '.doc':
+            if not _HAS_HTML2TEXT:
+                return None
+            html = doc_path.read_text(encoding='utf-8', errors='replace')
+        else:
+            return None
+
+        converter = html2text.HTML2Text()
+        converter.ignore_links = False
+        converter.body_width = 0
+        return converter.handle(html)
+    except Exception as e:
+        logging.warning('Failed to convert %s to markdown: %s', doc_path.name, e)
+        return None
+
+
+def generate_md_companion(doc_path: Path) -> Path | None:
+    """Generate a _doc.md / _docx.md companion file next to the original.
+
+    Example: Document.docx → Document_docx.md
+    Returns the companion Path, or None if conversion failed.
+    """
+    md_content = convert_doc_to_md(doc_path)
+    if md_content is None:
+        return None
+    suffix_tag = doc_path.suffix.lstrip('.').lower()  # "docx" or "doc"
+    companion = doc_path.parent / f'{doc_path.stem}_{suffix_tag}.md'
+    companion.write_text(md_content, encoding='utf-8')
+    return companion
 
 
 def find_all_files(source_dir: Path):
@@ -123,6 +180,13 @@ def commit_all(source_dir: Path, target_repo: Path, *, dry_run: bool = False) ->
         shutil.copy2(source_path, target_subdir / file_name)
         git('add', git_path, cwd=target_repo)
 
+        # Generate _doc.md / _docx.md companion for Word files
+        companion = generate_md_companion(target_subdir / file_name)
+        if companion:
+            c_git = companion.name if rel_dir == '.' else f'{rel_dir}/{companion.name}'
+            git('add', c_git, cwd=target_repo)
+            logging.info('Generated companion: %s', c_git)
+
         status = git('status', '--porcelain', cwd=target_repo)
         if not status:
             logging.info('Skipped (already exists): %s', git_path)
@@ -160,6 +224,13 @@ def commit_all(source_dir: Path, target_repo: Path, *, dry_run: bool = False) ->
             target_subdir.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source_path, target_subdir / target_name)
             git('add', git_path, cwd=target_repo)
+
+            # Generate _doc.md / _docx.md companion for Word files
+            companion = generate_md_companion(target_subdir / target_name)
+            if companion:
+                c_git = companion.name if rel_dir == '.' else f'{rel_dir}/{companion.name}'
+                git('add', c_git, cwd=target_repo)
+                logging.info('Generated companion: %s', c_git)
 
             status = git('status', '--porcelain', cwd=target_repo)
             if not status:
