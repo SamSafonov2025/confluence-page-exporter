@@ -198,7 +198,12 @@ class Confluence:
 
     def page_to_markdown(self, page_id: str, dir_path: Path | str,
                          version: int | None = None) -> None:
-        ''' Save page as Markdown '''
+        ''' Save page as Markdown.
+
+        Naming convention:
+          - With version:    "PageTitle <N>.0.md"  (git_versioner.py compatible)
+          - Without version: "PageTitle_<pageId>.md"
+        '''
         page_data = self.get_page_content(page_id, version=version)
 
         if 'statusCode' in page_data:
@@ -214,7 +219,7 @@ class Confluence:
 
         markdown_content = self.converter.handle(html_content)
 
-        version_info = f' (version {version})' if version else ''
+        version_info = f' (version {page_version})' if version else ''
         header = f'# {page_title}{version_info}\n\n'
         header += f'**Space:** {space_key}\n'
         header += f'**Page ID:** {page_id}\n'
@@ -225,11 +230,13 @@ class Confluence:
 
         full_content = header + markdown_content
 
+        safe_title = self.secure_string(page_title)
         if version is not None:
-            file_name = self.secure_string(
-                f'{page_title}_v{version}_{version_date}.md')
+            # "PageTitle 3.0.md" — matches git_versioner.py VERSION_PATTERN
+            file_name = f'{safe_title} {version}.0.md'
         else:
-            file_name = self.secure_string(f'{page_title}_{page_id}.md')
+            # "PageTitle_12345.md" — no version, treated as plain file
+            file_name = f'{safe_title}_{page_id}.md'
 
         Path(dir_path).mkdir(exist_ok=True, parents=True)
 
@@ -244,22 +251,28 @@ class Confluence:
     def export_page(self, page_id: str, dir_path: Path | str,
                     fmt: str = 'doc', export_versions: bool = False,
                     export_attachments: bool = False) -> None:
-        ''' Export a single page in the given format, optionally with version history '''
+        ''' Export a single page in the given format, optionally with version history.
+
+        When export_versions is True, each historical version is saved as
+        "PageTitle N.0.md" directly in the page directory (compatible with
+        git_versioner.py). Otherwise only the latest version is saved.
+        '''
         page_title = self.get_page_by_id(page_id)['title']
         page_dir = Path(dir_path) / self.secure_string(f'{page_title}_{page_id}')
         logging.info('Exporting page %s as %s to %s', page_id, fmt, page_dir)
 
         if fmt == 'markdown':
-            self.page_to_markdown(page_id, page_dir)
             if export_versions:
                 versions = self.get_page_versions(page_id)
                 if versions:
-                    versions_dir = page_dir / 'versions'
                     for ver in versions:
-                        ver_num = ver['number']
-                        ver_date = ver['when'][:10]
-                        ver_dir = versions_dir / f'v{ver_num}_{ver_date}'
-                        self.page_to_markdown(page_id, ver_dir, version=ver_num)
+                        self.page_to_markdown(page_id, page_dir,
+                                              version=ver['number'])
+                else:
+                    # No history available — save current version as plain
+                    self.page_to_markdown(page_id, page_dir)
+            else:
+                self.page_to_markdown(page_id, page_dir)
         else:
             self.page_to_doc(page_id, page_dir)
 
