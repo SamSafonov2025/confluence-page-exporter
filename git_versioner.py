@@ -47,28 +47,31 @@ def parse_version(version_str: str) -> tuple[int, ...]:
     return tuple(int(x) for x in version_str.split('.'))
 
 
-def find_versioned_files(source_dir: Path) -> dict[tuple[str, str, str], list[tuple[str, Path]]]:
-    """Recursively find files with version patterns.
+def find_all_files(source_dir: Path):
+    """Recursively find all files, separating versioned from plain.
 
     Returns:
-        {("rel/subdir", "request_config", "json"): [("0.1.5.1", Path), ...]}
-        Each group is sorted by version number.
+        versioned: {("rel/subdir", "name", "ext"): [("0.1.5.1", Path), ...]}
+        plain:     [("rel/subdir", Path), ...]
     """
-    groups = defaultdict(list)
+    versioned = defaultdict(list)
+    plain = []
 
     for entry in sorted(source_dir.rglob('*')):
         if not entry.is_file():
             continue
+        rel_dir = str(entry.parent.relative_to(source_dir))
         match = VERSION_PATTERN.match(entry.name)
         if match:
             name, version, ext = match.groups()
-            rel_dir = str(entry.parent.relative_to(source_dir))
-            groups[(rel_dir, name, ext)].append((version, entry))
+            versioned[(rel_dir, name, ext)].append((version, entry))
+        else:
+            plain.append((rel_dir, entry))
 
-    for key in groups:
-        groups[key].sort(key=lambda x: parse_version(x[0]))
+    for key in versioned:
+        versioned[key].sort(key=lambda x: parse_version(x[0]))
 
-    return dict(groups)
+    return dict(versioned), plain
 
 
 def git(*args, cwd: Path) -> str:
@@ -85,23 +88,54 @@ def git(*args, cwd: Path) -> str:
     return result.stdout.strip()
 
 
-def commit_versions(source_dir: Path, target_repo: Path, *, dry_run: bool = False) -> int:
-    """Recursively process versioned files and create one git commit per version.
+def commit_all(source_dir: Path, target_repo: Path, *, dry_run: bool = False) -> int:
+    """Recursively process all files: plain files first, then versioned.
 
     Returns the total number of commits created.
     """
-    groups = find_versioned_files(source_dir)
+    versioned, plain = find_all_files(source_dir)
 
-    if not groups:
-        logging.warning('No versioned files found in %s', source_dir)
+    if not versioned and not plain:
+        logging.warning('No files found in %s', source_dir)
         return 0
 
     total_commits = 0
 
-    for (rel_dir, name, ext), versions in sorted(groups.items()):
+    # 1) Commit plain files (e.g. .md pages) — one commit per file
+    for rel_dir, source_path in plain:
+        file_name = source_path.name
+        if rel_dir == '.':
+            target_subdir = target_repo
+            git_path = file_name
+        else:
+            target_subdir = target_repo / rel_dir
+            git_path = f'{rel_dir}/{file_name}'
+
+        commit_msg = f'Add {git_path}'
+
+        if dry_run:
+            logging.info('[DRY RUN] %s  (%d bytes)',
+                         commit_msg, source_path.stat().st_size)
+            total_commits += 1
+            continue
+
+        target_subdir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, target_subdir / file_name)
+        git('add', git_path, cwd=target_repo)
+
+        status = git('status', '--porcelain', cwd=target_repo)
+        if not status:
+            logging.info('Skipped (already exists): %s', git_path)
+            continue
+
+        git('commit', '-m', commit_msg, cwd=target_repo)
+        logging.info('Committed: %s  (%d bytes)', commit_msg, source_path.stat().st_size)
+        total_commits += 1
+
+    # 2) Commit versioned files — one commit per version
+    for (rel_dir, name, ext), versions in sorted(versioned.items()):
         target_name = f'{name}.{ext}'
 
-        # Build target path preserving directory structure
         if rel_dir == '.':
             target_subdir = target_repo
             git_path = target_name
@@ -127,7 +161,6 @@ def commit_versions(source_dir: Path, target_repo: Path, *, dry_run: bool = Fals
             shutil.copy2(source_path, target_subdir / target_name)
             git('add', git_path, cwd=target_repo)
 
-            # Skip if file content is identical to previous version
             status = git('status', '--porcelain', cwd=target_repo)
             if not status:
                 logging.info('Skipped (identical to previous): %s', commit_msg)
@@ -168,7 +201,7 @@ def main():
     elif not (target / '.git').is_dir():
         sys.exit(f'Not a git repo: {target}  (use --init to create one)')
 
-    total = commit_versions(source, target, dry_run=args.dry_run)
+    total = commit_all(source, target, dry_run=args.dry_run)
 
     if args.dry_run:
         logging.info('Dry run complete — no commits were made')
