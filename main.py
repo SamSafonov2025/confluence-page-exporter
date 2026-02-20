@@ -50,12 +50,12 @@ class Confluence:
 
     def get_page_by_id(self, page_id: str) -> dict:
         ''' Get page by ID '''
-        api = f'{self.url}/wiki/rest/api/content/{page_id}'
+        api = f'{self.url}/rest/api/content/{page_id}'
         return self._request(api).json()
 
     def get_page_content(self, page_id: str, version: int | None = None) -> dict:
         ''' Get page content with body and metadata '''
-        api = f'{self.url}/wiki/rest/api/content/{page_id}'
+        api = f'{self.url}/rest/api/content/{page_id}'
         params = {"expand": "body.storage,version,space"}
         if version is not None:
             params["status"] = "historical"
@@ -64,13 +64,13 @@ class Confluence:
 
     def get_page_ancestors(self, page_id: str) -> list:
         ''' Returns all ancestors for a given page by ID '''
-        api = f'{self.url}/wiki/rest/api/content/{page_id}'
+        api = f'{self.url}/rest/api/content/{page_id}'
         data = self._request(api, params={"expand": "ancestors"}).json()
         return data.get('ancestors', [])
 
     def get_page_children(self, page_id: str) -> list:
         ''' Returns all child pages for given page ID '''
-        api = f'{self.url}/wiki/rest/api/content/{page_id}/child/page'
+        api = f'{self.url}/rest/api/content/{page_id}/child/page'
         return self._request(api).json()['results']
 
     def get_all_child_pages(self, page_id: str) -> list:
@@ -88,7 +88,7 @@ class Confluence:
 
     def get_page_versions(self, page_id: str) -> list:
         ''' Get all versions of a page '''
-        api = f'{self.url}/wiki/rest/api/content/{page_id}/version'
+        api = f'{self.url}/rest/api/content/{page_id}/version'
         try:
             versions = self._request(api).json().get('results', [])
             logging.info('Page %s has %d versions', page_id, len(versions))
@@ -147,7 +147,7 @@ class Confluence:
         header += f'**Page ID:** {page_id}\n'
         header += f'**Version:** {page_version}\n'
         header += f'**Date:** {version_date}\n'
-        header += f'**URL:** {self.url}/wiki/spaces/{space_key}/pages/{page_id}\n\n'
+        header += f'**URL:** {self.url}/spaces/{space_key}/pages/{page_id}\n\n'
         header += '---\n\n'
 
         full_content = header + markdown_content
