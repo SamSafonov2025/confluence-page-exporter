@@ -1,3 +1,6 @@
 requests
 html2text
 mammoth
+sqlalchemy
+alembic
+psycopg2-binary

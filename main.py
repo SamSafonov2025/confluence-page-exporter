@@ -119,14 +119,35 @@ class Confluence:
 
         return results
 
-    def download_attachments(self, page_id: str, dir_path: Path | str) -> int:
+    def download_attachments(self, page_id: str, dir_path: Path | str,
+                             tracker=None) -> int:
         ''' Download all attachments for a page directly into dir_path '''
         attachments = self.get_page_attachments(page_id)
         if not attachments:
             logging.debug('No attachments found for page %s', page_id)
             return 0
 
-        logging.info('Found %d attachments for page %s', len(attachments), page_id)
+        if tracker:
+            exported = tracker.get_exported_attachments(page_id)
+            new_attachments = []
+            for att in attachments:
+                att_id = att['id']
+                att_ver = att.get('version', {}).get('number')
+                prev_ver = exported.get(att_id)
+                if prev_ver is None or (att_ver and att_ver != prev_ver):
+                    new_attachments.append(att)
+            if not new_attachments:
+                logging.info('All %d attachments for page %s already exported',
+                             len(attachments), page_id)
+                return 0
+            logging.info('Found %d new/updated attachments for page %s '
+                         '(of %d total)', len(new_attachments), page_id,
+                         len(attachments))
+            attachments = new_attachments
+        else:
+            logging.info('Found %d attachments for page %s',
+                         len(attachments), page_id)
+
         Path(dir_path).mkdir(exist_ok=True, parents=True)
         downloaded = 0
 
@@ -151,6 +172,10 @@ class Confluence:
                 logging.info('Attachment "%s" saved (%d bytes)',
                              title, len(content))
                 downloaded += 1
+                if tracker:
+                    att_ver = att.get('version', {}).get('number')
+                    tracker.mark_attachment_exported(
+                        page_id, att['id'], title, att_ver)
             except (requests.exceptions.HTTPError, SystemExit):
                 logging.warning('Failed to download attachment "%s" for page %s '
                                 '(URL: %s)', title, page_id, url)
@@ -250,34 +275,92 @@ class Confluence:
 
     def export_page(self, page_id: str, dir_path: Path | str,
                     fmt: str = 'doc', export_versions: bool = False,
-                    export_attachments: bool = False) -> None:
+                    export_attachments: bool = False,
+                    tracker=None) -> None:
         ''' Export a single page in the given format, optionally with version history.
 
         When export_versions is True, each historical version is saved as
         "PageTitle N.0.md" directly in the page directory (compatible with
         git_versioner.py). Otherwise only the latest version is saved.
+
+        If tracker is provided, already-exported versions are skipped.
         '''
         page_title = self.get_page_by_id(page_id)['title']
         page_dir = Path(dir_path) / self.secure_string(f'{page_title}_{page_id}')
-        logging.info('Exporting page %s as %s to %s', page_id, fmt, page_dir)
 
         if fmt == 'markdown':
             if export_versions:
-                versions = self.get_page_versions(page_id)
-                if versions:
-                    for ver in versions:
-                        self.page_to_markdown(page_id, page_dir,
-                                              version=ver['number'])
+                all_versions = self.get_page_versions(page_id)
+                if all_versions:
+                    if tracker:
+                        already = tracker.get_exported_versions(
+                            page_id, 'markdown')
+                        to_export = [v for v in all_versions
+                                     if v['number'] not in already]
+                    else:
+                        to_export = all_versions
+
+                    if not to_export:
+                        logging.info('Page %s (%s): all %d versions already '
+                                     'exported, skipping',
+                                     page_id, page_title, len(all_versions))
+                    else:
+                        logging.info('Page %s (%s): exporting %d new versions '
+                                     '(of %d total)',
+                                     page_id, page_title,
+                                     len(to_export), len(all_versions))
+                        for ver in to_export:
+                            self.page_to_markdown(page_id, page_dir,
+                                                  version=ver['number'])
+                            if tracker:
+                                tracker.mark_version_exported(
+                                    page_id, ver['number'],
+                                    page_title, 'markdown')
                 else:
-                    # No history available — save current version as plain
                     self.page_to_markdown(page_id, page_dir)
             else:
-                self.page_to_markdown(page_id, page_dir)
+                # Export only the latest version
+                if tracker:
+                    all_versions = self.get_page_versions(page_id)
+                    if all_versions:
+                        current_ver = max(v['number'] for v in all_versions)
+                        already = tracker.get_exported_versions(
+                            page_id, 'markdown')
+                        if current_ver in already:
+                            logging.info(
+                                'Page %s (%s): version %d already exported, '
+                                'skipping', page_id, page_title, current_ver)
+                        else:
+                            self.page_to_markdown(page_id, page_dir)
+                            tracker.mark_version_exported(
+                                page_id, current_ver,
+                                page_title, 'markdown')
+                    else:
+                        self.page_to_markdown(page_id, page_dir)
+                else:
+                    self.page_to_markdown(page_id, page_dir)
         else:
-            self.page_to_doc(page_id, page_dir)
+            # doc format
+            if tracker:
+                all_versions = self.get_page_versions(page_id)
+                if all_versions:
+                    current_ver = max(v['number'] for v in all_versions)
+                    already = tracker.get_exported_versions(page_id, 'doc')
+                    if current_ver in already:
+                        logging.info(
+                            'Page %s (%s): doc version %d already exported, '
+                            'skipping', page_id, page_title, current_ver)
+                    else:
+                        self.page_to_doc(page_id, page_dir)
+                        tracker.mark_version_exported(
+                            page_id, current_ver, page_title, 'doc')
+                else:
+                    self.page_to_doc(page_id, page_dir)
+            else:
+                self.page_to_doc(page_id, page_dir)
 
         if export_attachments:
-            self.download_attachments(page_id, page_dir)
+            self.download_attachments(page_id, page_dir, tracker=tracker)
 
     def build_page_path(self, page_id: str, root_page_id: str,
                         output_dir: Path) -> Path:
@@ -292,6 +375,20 @@ class Confluence:
             page_full_path.append(f'{ancestor_titles[index]}_{ancestor_ids[index]}')
 
         return output_dir / '/'.join(page_full_path)
+
+
+def _init_tracker(database_url: str):
+    ''' Initialize ExportTracker and run DB migrations. '''
+    from alembic.config import Config
+    from alembic import command
+    from models import ExportTracker
+
+    alembic_ini = Path(__file__).parent / 'alembic.ini'
+    alembic_cfg = Config(str(alembic_ini))
+    alembic_cfg.set_main_option('sqlalchemy.url', database_url)
+    command.upgrade(alembic_cfg, 'head')
+
+    return ExportTracker(database_url)
 
 
 def main():
@@ -341,6 +438,17 @@ def main():
     logging.info('Page IDs to process: %s', page_ids)
     logging.info('Output directory: %s', output_dir)
 
+    # Set up incremental export tracking (optional)
+    tracker = None
+    database_url = config.get('database_url')
+    if database_url:
+        tracker = _init_tracker(database_url)
+        db_display = (database_url.split('@')[-1]
+                      if '@' in database_url else database_url)
+        logging.info('Incremental export enabled (database: %s)', db_display)
+    else:
+        logging.info('Full export mode (no "database_url" in config)')
+
     confluence = Confluence(
         url=config['url'],
         username=username,
@@ -357,7 +465,8 @@ def main():
         confluence.export_page(root_page_id, output_dir,
                                fmt=export_format,
                                export_versions=export_versions,
-                               export_attachments=export_attachments)
+                               export_attachments=export_attachments,
+                               tracker=tracker)
         total_exported += 1
 
         for page in pages:
@@ -366,10 +475,11 @@ def main():
             confluence.export_page(page['id'], dir_path,
                                    fmt=export_format,
                                    export_versions=export_versions,
-                                   export_attachments=export_attachments)
+                                   export_attachments=export_attachments,
+                                   tracker=tracker)
             total_exported += 1
 
-    logging.info('Export complete: %d pages exported', total_exported)
+    logging.info('Export complete: %d pages processed', total_exported)
 
 
 if __name__ == '__main__':
