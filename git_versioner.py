@@ -194,7 +194,7 @@ def commit_all(source_dir: Path, target_repo: Path, *,
     total_commits = 0
     skipped_db = 0
 
-    # 1) Commit plain files (e.g. .md pages) — one commit per file
+    # 1) Commit plain files (e.g. .md pages, attachments) — one commit per file
     for rel_dir, source_path in plain:
         file_name = source_path.name
         source_rel = str(source_path.relative_to(source_dir))
@@ -213,6 +213,12 @@ def commit_all(source_dir: Path, target_repo: Path, *,
             git_path = f'{rel_dir}/{file_name}'
 
         commit_msg = f'Add {git_path}'
+
+        # Extract page_id for attachment tracking
+        page_id = None
+        if tracker:
+            dir_name = source_dir.name if rel_dir == '.' else Path(rel_dir).name
+            page_id = _extract_page_id(dir_name)
 
         if dry_run:
             logging.info('[DRY RUN] %s  (%d bytes)',
@@ -236,6 +242,9 @@ def commit_all(source_dir: Path, target_repo: Path, *,
             logging.info('Skipped (already exists): %s', git_path)
             if tracker:
                 tracker.mark_file_committed(source_rel)
+                if page_id:
+                    tracker.mark_attachment_committed_by_filename(
+                        page_id, file_name)
             continue
 
         git('commit', '-m', commit_msg, cwd=target_repo)
@@ -244,6 +253,10 @@ def commit_all(source_dir: Path, target_repo: Path, *,
 
         if tracker:
             tracker.mark_file_committed(source_rel)
+            # Set committed_to_git on ExportedAttachment (checkbox 2)
+            if page_id:
+                tracker.mark_attachment_committed_by_filename(
+                    page_id, file_name)
 
     # 2) Commit versioned files — one commit per version
     for (rel_dir, name, ext), versions in sorted(versioned.items()):

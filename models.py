@@ -177,6 +177,30 @@ class ExportTracker:
                 record.committed_at = datetime.now(timezone.utc)
                 session.commit()
 
+    @staticmethod
+    def _sanitize(s: str) -> str:
+        ''' Same logic as Confluence.secure_string — for filename matching. '''
+        return ''.join(c for c in s if c.isalnum() or c in '._- ')
+
+    def mark_attachment_committed_by_filename(self, page_id: str,
+                                               filename: str):
+        ''' Match attachment by page_id + sanitized title, set checkbox 2.
+
+        git_versioner doesn't know the attachment_id — only the filename
+        on disk (which is the sanitized attachment_title from main.py).
+        '''
+        with self.SessionLocal() as session:
+            attachments = session.query(ExportedAttachment).filter_by(
+                page_id=page_id, committed_to_git=False
+            ).all()
+            for att in attachments:
+                sanitized = self._sanitize(att.attachment_title or '')
+                if sanitized == filename:
+                    att.committed_to_git = True
+                    att.committed_at = datetime.now(timezone.utc)
+                    session.commit()
+                    return
+
 
 def init_tracker(database_url: str) -> ExportTracker:
     ''' Create ExportTracker and auto-run Alembic migrations. '''
