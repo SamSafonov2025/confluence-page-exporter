@@ -1,16 +1,22 @@
 ''' SQLAlchemy models and ExportTracker for incremental Confluence exports. '''
 
 from datetime import datetime, timezone
+from pathlib import Path
 
-from sqlalchemy import (Column, Integer, String, DateTime, UniqueConstraint,
-                        create_engine)
+from sqlalchemy import (Column, Integer, String, DateTime, Boolean,
+                        UniqueConstraint, create_engine)
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 Base = declarative_base()
 
 
 class ExportedPageVersion(Base):
-    ''' Tracks which page versions have been exported. '''
+    ''' Tracks which page versions have been exported.
+
+    Two flags per record:
+      - record exists      → exported from Confluence (checkbox 1)
+      - committed_to_git   → processed by git_versioner (checkbox 2)
+    '''
     __tablename__ = 'exported_page_versions'
 
     id = Column(Integer, primary_key=True)
@@ -19,6 +25,8 @@ class ExportedPageVersion(Base):
     page_title = Column(String)
     export_format = Column(String)
     exported_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    committed_to_git = Column(Boolean, default=False)
+    committed_at = Column(DateTime)
 
     __table_args__ = (
         UniqueConstraint('page_id', 'version_number', 'export_format',
@@ -36,6 +44,8 @@ class ExportedAttachment(Base):
     attachment_title = Column(String)
     attachment_version = Column(Integer)
     exported_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    committed_to_git = Column(Boolean, default=False)
+    committed_at = Column(DateTime)
 
     __table_args__ = (
         UniqueConstraint('page_id', 'attachment_id',
@@ -43,16 +53,32 @@ class ExportedAttachment(Base):
     )
 
 
+class CommittedFile(Base):
+    ''' Tracks files processed by git_versioner (by source path).
+
+    Works for any file type — versioned pages, attachments, plain files.
+    '''
+    __tablename__ = 'committed_files'
+
+    id = Column(Integer, primary_key=True)
+    source_path = Column(String, nullable=False, unique=True)
+    committed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 class ExportTracker:
     ''' Tracks export state in PostgreSQL to enable incremental exports.
 
-    When a database_url is configured, the exporter checks which pages/versions
-    and attachments have already been exported and skips them on re-runs.
+    Used by main.py (export from Confluence) and git_versioner.py
+    (commit to git). Provides two "checkboxes" per version:
+      1. exported   — record exists in exported_page_versions
+      2. committed  — committed_to_git flag is True
     '''
 
     def __init__(self, database_url: str):
         self.engine = create_engine(database_url)
         self.SessionLocal = sessionmaker(bind=self.engine)
+
+    # ── main.py: export tracking ─────────────────────────────────────
 
     def get_exported_versions(self, page_id: str, fmt: str) -> set[int]:
         ''' Return set of version numbers already exported for a page+format. '''
@@ -107,3 +133,59 @@ class ExportTracker:
                     attachment_version=version,
                 ))
             session.commit()
+
+    # ── git_versioner.py: commit tracking ────────────────────────────
+
+    def is_file_committed(self, source_path: str) -> bool:
+        ''' Check if a file (by relative path) was already committed. '''
+        with self.SessionLocal() as session:
+            return session.query(CommittedFile).filter_by(
+                source_path=source_path
+            ).first() is not None
+
+    def mark_file_committed(self, source_path: str):
+        ''' Record that a file has been committed by git_versioner. '''
+        with self.SessionLocal() as session:
+            existing = session.query(CommittedFile).filter_by(
+                source_path=source_path
+            ).first()
+            if not existing:
+                session.add(CommittedFile(source_path=source_path))
+                session.commit()
+
+    def mark_version_committed(self, page_id: str, version_number: int,
+                                fmt: str):
+        ''' Set committed_to_git flag on ExportedPageVersion (checkbox 2). '''
+        with self.SessionLocal() as session:
+            record = session.query(ExportedPageVersion).filter_by(
+                page_id=page_id, version_number=version_number,
+                export_format=fmt
+            ).first()
+            if record and not record.committed_to_git:
+                record.committed_to_git = True
+                record.committed_at = datetime.now(timezone.utc)
+                session.commit()
+
+    def mark_attachment_committed(self, page_id: str, attachment_id: str):
+        ''' Set committed_to_git flag on ExportedAttachment (checkbox 2). '''
+        with self.SessionLocal() as session:
+            record = session.query(ExportedAttachment).filter_by(
+                page_id=page_id, attachment_id=attachment_id
+            ).first()
+            if record and not record.committed_to_git:
+                record.committed_to_git = True
+                record.committed_at = datetime.now(timezone.utc)
+                session.commit()
+
+
+def init_tracker(database_url: str) -> ExportTracker:
+    ''' Create ExportTracker and auto-run Alembic migrations. '''
+    from alembic.config import Config
+    from alembic import command
+
+    alembic_ini = Path(__file__).parent / 'alembic.ini'
+    alembic_cfg = Config(str(alembic_ini))
+    alembic_cfg.set_main_option('sqlalchemy.url', database_url)
+    command.upgrade(alembic_cfg, 'head')
+
+    return ExportTracker(database_url)

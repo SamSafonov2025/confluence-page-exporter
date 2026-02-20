@@ -377,20 +377,6 @@ class Confluence:
         return output_dir / '/'.join(page_full_path)
 
 
-def _init_tracker(database_url: str):
-    ''' Initialize ExportTracker and run DB migrations. '''
-    from alembic.config import Config
-    from alembic import command
-    from models import ExportTracker
-
-    alembic_ini = Path(__file__).parent / 'alembic.ini'
-    alembic_cfg = Config(str(alembic_ini))
-    alembic_cfg.set_main_option('sqlalchemy.url', database_url)
-    command.upgrade(alembic_cfg, 'head')
-
-    return ExportTracker(database_url)
-
-
 def main():
     ''' Entry point '''
     try:
@@ -442,7 +428,8 @@ def main():
     tracker = None
     database_url = config.get('database_url')
     if database_url:
-        tracker = _init_tracker(database_url)
+        from models import init_tracker
+        tracker = init_tracker(database_url)
         db_display = (database_url.split('@')[-1]
                       if '@' in database_url else database_url)
         logging.info('Incremental export enabled (database: %s)', db_display)

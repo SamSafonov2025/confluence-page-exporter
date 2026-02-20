@@ -7,6 +7,9 @@ with version numbers in their names (e.g., "request_config 0.1.5.1.json"),
 groups them by base name, and creates sequential git commits — one per
 version — with the clean filename and version in the commit message.
 
+Supports incremental mode: when --database-url is given (or "database_url"
+is set in config.json), already-committed files are skipped.
+
 Usage:
     python git_versioner.py <source_dir> <target_repo> [options]
 
@@ -17,11 +20,16 @@ Examples:
     # Initialize a new repo and commit all versions recursively:
     python git_versioner.py ./output/MainPage_12345 /path/to/repo --init
 
-    # Commit to an existing repo:
+    # Incremental: skip files already committed (reads database_url from config.json):
     python git_versioner.py ./output/MainPage_12345 /path/to/repo
+
+    # Explicit database URL:
+    python git_versioner.py ./output/MainPage_12345 /path/to/repo \
+        --database-url postgresql://user:pass@localhost/confluence_export
 """
 
 import argparse
+import json
 import logging
 import re
 import shutil
@@ -57,6 +65,29 @@ logging.basicConfig(
 def parse_version(version_str: str) -> tuple[int, ...]:
     """Parse '0.1.5.1' into (0, 1, 5, 1) for proper numeric sorting."""
     return tuple(int(x) for x in version_str.split('.'))
+
+
+def _extract_page_id(dir_name: str) -> str | None:
+    """Extract page_id from directory name like 'PageTitle_12345'."""
+    idx = dir_name.rfind('_')
+    if idx >= 0:
+        candidate = dir_name[idx + 1:]
+        if candidate.isdigit():
+            return candidate
+    return None
+
+
+def _extract_confluence_version(version_str: str) -> int | None:
+    """Extract Confluence page version from filename version like '3.0' → 3.
+
+    main.py creates versioned markdown files as 'PageTitle N.0.md' where N
+    is the Confluence version number.  Returns None for other patterns
+    (e.g. '0.1.5.1' for attachments).
+    """
+    parts = version_str.split('.')
+    if len(parts) == 2 and parts[1] == '0' and parts[0].isdigit():
+        return int(parts[0])
+    return None
 
 
 def convert_doc_to_md(doc_path: Path) -> str | None:
@@ -145,8 +176,12 @@ def git(*args, cwd: Path) -> str:
     return result.stdout.strip()
 
 
-def commit_all(source_dir: Path, target_repo: Path, *, dry_run: bool = False) -> int:
+def commit_all(source_dir: Path, target_repo: Path, *,
+               dry_run: bool = False, tracker=None) -> int:
     """Recursively process all files: plain files first, then versioned.
+
+    When tracker is provided, already-committed files are skipped (by source
+    path) and newly committed files are recorded in the database.
 
     Returns the total number of commits created.
     """
@@ -157,10 +192,19 @@ def commit_all(source_dir: Path, target_repo: Path, *, dry_run: bool = False) ->
         return 0
 
     total_commits = 0
+    skipped_db = 0
 
     # 1) Commit plain files (e.g. .md pages) — one commit per file
     for rel_dir, source_path in plain:
         file_name = source_path.name
+        source_rel = str(source_path.relative_to(source_dir))
+
+        # DB check: skip if already committed
+        if tracker and tracker.is_file_committed(source_rel):
+            logging.info('Skipped (already in DB): %s', source_rel)
+            skipped_db += 1
+            continue
+
         if rel_dir == '.':
             target_subdir = target_repo
             git_path = file_name
@@ -190,11 +234,16 @@ def commit_all(source_dir: Path, target_repo: Path, *, dry_run: bool = False) ->
         status = git('status', '--porcelain', cwd=target_repo)
         if not status:
             logging.info('Skipped (already exists): %s', git_path)
+            if tracker:
+                tracker.mark_file_committed(source_rel)
             continue
 
         git('commit', '-m', commit_msg, cwd=target_repo)
         logging.info('Committed: %s  (%d bytes)', commit_msg, source_path.stat().st_size)
         total_commits += 1
+
+        if tracker:
+            tracker.mark_file_committed(source_rel)
 
     # 2) Commit versioned files — one commit per version
     for (rel_dir, name, ext), versions in sorted(versioned.items()):
@@ -211,7 +260,22 @@ def commit_all(source_dir: Path, target_repo: Path, *, dry_run: bool = False) ->
 
         logging.info('--- %s: %d versions ---', display_path, len(versions))
 
+        # Determine page_id for updating ExportedPageVersion flag
+        page_id = None
+        if tracker:
+            dir_name = source_dir.name if rel_dir == '.' else Path(rel_dir).name
+            page_id = _extract_page_id(dir_name)
+
         for version_str, source_path in versions:
+            source_rel = str(source_path.relative_to(source_dir))
+
+            # DB check: skip if already committed
+            if tracker and tracker.is_file_committed(source_rel):
+                logging.info('Skipped (already in DB): %s v%s',
+                             display_path, version_str)
+                skipped_db += 1
+                continue
+
             commit_msg = f'{display_path} version {version_str}'
 
             if dry_run:
@@ -235,6 +299,8 @@ def commit_all(source_dir: Path, target_repo: Path, *, dry_run: bool = False) ->
             status = git('status', '--porcelain', cwd=target_repo)
             if not status:
                 logging.info('Skipped (identical to previous): %s', commit_msg)
+                if tracker:
+                    tracker.mark_file_committed(source_rel)
                 continue
 
             git('commit', '-m', commit_msg, cwd=target_repo)
@@ -242,7 +308,33 @@ def commit_all(source_dir: Path, target_repo: Path, *, dry_run: bool = False) ->
                          commit_msg, source_path.stat().st_size)
             total_commits += 1
 
+            if tracker:
+                tracker.mark_file_committed(source_rel)
+                # Also set committed_to_git flag on ExportedPageVersion
+                if page_id:
+                    conf_ver = _extract_confluence_version(version_str)
+                    if conf_ver is not None:
+                        fmt = 'markdown' if ext == 'md' else ext
+                        tracker.mark_version_committed(
+                            page_id, conf_ver, fmt)
+
+    if skipped_db:
+        logging.info('Skipped %d files (already committed per DB)', skipped_db)
+
     return total_commits
+
+
+def _load_database_url() -> str | None:
+    """Try to read database_url from config.json (same as main.py uses)."""
+    config_path = Path(__file__).parent / 'config.json'
+    if not config_path.exists():
+        return None
+    try:
+        with open(config_path, encoding='utf-8') as f:
+            config = json.load(f)
+        return config.get('database_url')
+    except (json.JSONDecodeError, OSError):
+        return None
 
 
 def main():
@@ -256,6 +348,9 @@ def main():
                         help='Show what would be done without making changes')
     parser.add_argument('--init', action='store_true',
                         help='Initialize a new git repo at target path')
+    parser.add_argument('--database-url',
+                        help='PostgreSQL URL for incremental tracking '
+                             '(default: read from config.json)')
 
     args = parser.parse_args()
 
@@ -272,7 +367,17 @@ def main():
     elif not (target / '.git').is_dir():
         sys.exit(f'Not a git repo: {target}  (use --init to create one)')
 
-    total = commit_all(source, target, dry_run=args.dry_run)
+    # Set up incremental tracking
+    tracker = None
+    database_url = args.database_url or _load_database_url()
+    if database_url:
+        from models import init_tracker
+        tracker = init_tracker(database_url)
+        logging.info('Incremental mode: skipping already-committed files')
+    else:
+        logging.info('Full mode (no database_url — all files will be processed)')
+
+    total = commit_all(source, target, dry_run=args.dry_run, tracker=tracker)
 
     if args.dry_run:
         logging.info('Dry run complete — no commits were made')
