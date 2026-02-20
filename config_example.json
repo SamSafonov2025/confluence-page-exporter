@@ -13,5 +13,8 @@
     "pageIds": ["000000", "111111"],
     "format": "markdown",
     "export_versions": true,
-    "export_attachments": true
+    "export_attachments": true,
+
+    "_comment_db": "Optional: PostgreSQL URL for incremental export tracking",
+    "database_url": "postgresql://user:password@localhost:5432/confluence_export"
 }
