@@ -96,15 +96,12 @@ class Confluence:
             return []
 
     def download_attachments(self, page_id: str, dir_path: Path | str) -> int:
-        ''' Download all attachments for a page into dir_path/attachments '''
+        ''' Download all attachments for a page directly into dir_path '''
         attachments = self.get_page_attachments(page_id)
         if not attachments:
             return 0
 
-        page_title = self.get_page_by_id(page_id)['title']
-        folder_name = self.secure_string(f'{page_title}_{page_id}')
-        att_dir = Path(dir_path) / 'attachments' / folder_name
-        att_dir.mkdir(exist_ok=True, parents=True)
+        Path(dir_path).mkdir(exist_ok=True, parents=True)
         downloaded = 0
 
         for att in attachments:
@@ -119,7 +116,7 @@ class Confluence:
 
             try:
                 content = self._request(url).content
-                with open(att_dir / file_name, 'wb') as file:
+                with open(Path(dir_path) / file_name, 'wb') as file:
                     file.write(content)
                 logging.info('Attachment "%s" saved for page %s', title, page_id)
                 downloaded += 1
@@ -217,23 +214,26 @@ class Confluence:
                     fmt: str = 'doc', export_versions: bool = False,
                     export_attachments: bool = False) -> None:
         ''' Export a single page in the given format, optionally with version history '''
-        logging.info('Exporting page %s as %s to %s', page_id, fmt, dir_path)
+        page_title = self.get_page_by_id(page_id)['title']
+        page_dir = Path(dir_path) / self.secure_string(f'{page_title}_{page_id}')
+        logging.info('Exporting page %s as %s to %s', page_id, fmt, page_dir)
+
         if fmt == 'markdown':
-            self.page_to_markdown(page_id, dir_path)
+            self.page_to_markdown(page_id, page_dir)
             if export_versions:
                 versions = self.get_page_versions(page_id)
                 if versions:
-                    versions_dir = dir_path / 'versions'
+                    versions_dir = page_dir / 'versions'
                     for ver in versions:
                         ver_num = ver['number']
                         ver_date = ver['when'][:10]
                         ver_dir = versions_dir / f'v{ver_num}_{ver_date}'
                         self.page_to_markdown(page_id, ver_dir, version=ver_num)
         else:
-            self.page_to_doc(page_id, dir_path)
+            self.page_to_doc(page_id, page_dir)
 
         if export_attachments:
-            self.download_attachments(page_id, dir_path)
+            self.download_attachments(page_id, page_dir)
 
     def build_page_path(self, page_id: str, root_page_id: str,
                         output_dir: Path) -> Path:
