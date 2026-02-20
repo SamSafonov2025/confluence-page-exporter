@@ -190,9 +190,15 @@ def main():
         with open(Path(__file__).parent/'config.json', 'r', encoding='utf-8') as file:
             config = json.load(file)
 
-        required_keys = {'url', 'email', 'token', 'pageId'}
-        if not required_keys.issubset(config.keys()):
-            raise KeyError(f'Missing required keys: {required_keys - config.keys()}')
+        if 'url' not in config or 'pageId' not in config:
+            raise KeyError('Missing required keys: url, pageId')
+
+        has_token_auth = 'email' in config and 'token' in config
+        has_password_auth = 'login' in config and 'password' in config
+        if not has_token_auth and not has_password_auth:
+            raise KeyError(
+                'Auth not configured. '
+                'Use "email"+"token" for Cloud or "login"+"password" for Server')
     except FileNotFoundError:
         sys.exit('config.json not found')
     except (json.decoder.JSONDecodeError, KeyError, AttributeError) as e:
@@ -203,10 +209,17 @@ def main():
     export_versions = config.get('export_versions', False)
     page_ids = config.get('pageIds', [config['pageId']])
 
+    if 'login' in config:
+        username = config['login']
+        password = config['password']
+    else:
+        username = config['email']
+        password = config['token']
+
     confluence = Confluence(
         url=config['url'],
-        username=config['email'],
-        password=config['token'])
+        username=username,
+        password=password)
 
     for root_page_id in page_ids:
         logging.info('Processing root page %s', root_page_id)

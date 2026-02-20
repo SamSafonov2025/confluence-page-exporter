@@ -21,13 +21,28 @@ pip install -r requirement.txt
 
 ## Configuration
 
-Create a `config.json` file (see `config_example.json`):
+Create a `config.json` file (see `config_example.json`).
 
+### Authentication
+
+Two authentication methods are supported:
+
+**Confluence Cloud** — email + API token:
 ```json
 {
     "url": "https://your-domain.atlassian.net",
-    "email": "useremail",
+    "email": "user@example.com",
     "token": "api_token",
+    "pageId": "000000"
+}
+```
+
+**Confluence Server / Data Center** — login + password:
+```json
+{
+    "url": "https://wiki.your-company.com",
+    "login": "username",
+    "password": "your_password",
     "pageId": "000000"
 }
 ```
@@ -37,8 +52,10 @@ Create a `config.json` file (see `config_example.json`):
 | Key | Required | Description |
 |-----|----------|-------------|
 | `url` | Yes | Confluence base URL |
-| `email` | Yes | Username or email |
-| `token` | Yes | API token or password |
+| `email` | Cloud auth | Email for Confluence Cloud |
+| `token` | Cloud auth | API token ([how to get](https://confluence.atlassian.com/x/Vo71Nw)) |
+| `login` | Server auth | Username for Confluence Server/DC |
+| `password` | Server auth | Password for Confluence Server/DC |
 | `pageId` | Yes | Default root page ID |
 | `pageIds` | No | List of root page IDs to export (overrides `pageId`) |
 | `format` | No | Export format: `"doc"` (default) or `"markdown"` |
