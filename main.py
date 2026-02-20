@@ -101,7 +101,7 @@ class Confluence:
         if not attachments:
             return 0
 
-        att_dir = Path(dir_path) / 'attachments'
+        att_dir = Path(dir_path) / 'attachments' / page_id
         att_dir.mkdir(exist_ok=True, parents=True)
         downloaded = 0
 
