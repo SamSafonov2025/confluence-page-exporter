@@ -50,7 +50,7 @@ class Confluence:
 
     def get_page_by_id(self, page_id: str) -> dict:
         ''' Get page by ID '''
-        api = f'{self.url}/wiki/api/v2/pages/{page_id}'
+        api = f'{self.url}/wiki/rest/api/content/{page_id}'
         return self._request(api).json()
 
     def get_page_content(self, page_id: str, version: int | None = None) -> dict:
@@ -64,12 +64,13 @@ class Confluence:
 
     def get_page_ancestors(self, page_id: str) -> list:
         ''' Returns all ancestors for a given page by ID '''
-        api = f'{self.url}/wiki/api/v2/pages/{page_id}/ancestors'
-        return self._request(api).json()['results']
+        api = f'{self.url}/wiki/rest/api/content/{page_id}'
+        data = self._request(api, params={"expand": "ancestors"}).json()
+        return data.get('ancestors', [])
 
     def get_page_children(self, page_id: str) -> list:
         ''' Returns all child pages for given page ID '''
-        api = f'{self.url}/wiki/api/v2/pages/{page_id}/children'
+        api = f'{self.url}/wiki/rest/api/content/{page_id}/child/page'
         return self._request(api).json()['results']
 
     def get_all_child_pages(self, page_id: str) -> list:
@@ -188,14 +189,10 @@ class Confluence:
     def build_page_path(self, page_id: str, root_page_id: str,
                         output_dir: Path) -> Path:
         ''' Build the full directory path for a page based on its ancestors '''
-        ancestor_ids = []
-        ancestor_titles = []
+        ancestors = self.get_page_ancestors(page_id)
+        ancestor_ids = [a['id'] for a in ancestors]
+        ancestor_titles = [self.secure_string(a['title']) for a in ancestors]
         page_full_path = []
-
-        for ancestor in self.get_page_ancestors(page_id):
-            ancestor_ids.append(ancestor['id'])
-            title = self.get_page_by_id(ancestor['id'])['title']
-            ancestor_titles.append(self.secure_string(title))
 
         root_index = ancestor_ids.index(root_page_id)
         for index in range(root_index, len(ancestor_ids)):
