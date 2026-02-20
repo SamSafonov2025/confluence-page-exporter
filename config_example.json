@@ -12,5 +12,6 @@
     "pageId": "000000",
     "pageIds": ["000000", "111111"],
     "format": "markdown",
-    "export_versions": true
+    "export_versions": true,
+    "export_attachments": true
 }

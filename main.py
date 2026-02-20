@@ -69,9 +69,21 @@ class Confluence:
         return data.get('ancestors', [])
 
     def get_page_children(self, page_id: str) -> list:
-        ''' Returns all child pages for given page ID '''
+        ''' Returns all child pages for given page ID (with pagination) '''
         api = f'{self.url}/rest/api/content/{page_id}/child/page'
-        return self._request(api).json()['results']
+        results = []
+        start = 0
+        limit = 100
+
+        while True:
+            data = self._request(api, params={"start": start, "limit": limit}).json()
+            batch = data.get('results', [])
+            results.extend(batch)
+            if len(batch) < limit:
+                break
+            start += limit
+
+        return results
 
     def get_all_child_pages(self, page_id: str) -> list:
         ''' Returns all child pages for given page ID '''
@@ -87,20 +99,34 @@ class Confluence:
         return pages
 
     def get_page_attachments(self, page_id: str) -> list:
-        ''' Get all attachments for a page '''
+        ''' Get all attachments for a page (with pagination) '''
         api = f'{self.url}/rest/api/content/{page_id}/child/attachment'
+        results = []
+        start = 0
+        limit = 100
+
         try:
-            return self._request(api).json().get('results', [])
+            while True:
+                data = self._request(
+                    api, params={"start": start, "limit": limit}).json()
+                batch = data.get('results', [])
+                results.extend(batch)
+                if len(batch) < limit:
+                    break
+                start += limit
         except (requests.exceptions.HTTPError, SystemExit):
             logging.warning('Failed to get attachments for page %s', page_id)
-            return []
+
+        return results
 
     def download_attachments(self, page_id: str, dir_path: Path | str) -> int:
         ''' Download all attachments for a page directly into dir_path '''
         attachments = self.get_page_attachments(page_id)
         if not attachments:
+            logging.debug('No attachments found for page %s', page_id)
             return 0
 
+        logging.info('Found %d attachments for page %s', len(attachments), page_id)
         Path(dir_path).mkdir(exist_ok=True, parents=True)
         downloaded = 0
 
@@ -112,17 +138,22 @@ class Confluence:
                 continue
 
             file_name = self.secure_string(title) or f'attachment_{att["id"]}'
-            url = f'{self.url}{download_link}'
+            if download_link.startswith('http'):
+                url = download_link
+            else:
+                url = f'{self.url}{download_link}'
 
             try:
+                logging.debug('Downloading attachment: %s', url)
                 content = self._request(url).content
                 with open(Path(dir_path) / file_name, 'wb') as file:
                     file.write(content)
-                logging.info('Attachment "%s" saved for page %s', title, page_id)
+                logging.info('Attachment "%s" saved (%d bytes)',
+                             title, len(content))
                 downloaded += 1
             except (requests.exceptions.HTTPError, SystemExit):
-                logging.warning('Failed to download attachment "%s" for page %s',
-                                title, page_id)
+                logging.warning('Failed to download attachment "%s" for page %s '
+                                '(URL: %s)', title, page_id, url)
             except OSError:
                 logging.warning('Filename error for attachment "%s"', title)
 
@@ -291,6 +322,9 @@ def main():
     logging.info('Export format: %s', export_format)
     logging.info('Export versions: %s', export_versions)
     logging.info('Export attachments: %s', export_attachments)
+    if not export_attachments:
+        logging.warning('Attachments export is DISABLED. '
+                        'Set "export_attachments": true in config.json to enable.')
     logging.info('Page IDs to process: %s', page_ids)
     logging.info('Output directory: %s', output_dir)
 
