@@ -1,0 +1,16 @@
+{
+    "url": "https://your-domain.atlassian.net",
+
+    "_comment_auth": "Use ONE of the two auth methods below:",
+
+    "email": "useremail",
+    "token": "api_token (for Confluence Cloud)",
+
+    "login": "username",
+    "password": "password (for Confluence Server/Data Center)",
+
+    "pageId": "000000",
+    "pageIds": ["000000", "111111"],
+    "format": "markdown",
+    "export_versions": true
+}
