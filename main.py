@@ -101,7 +101,9 @@ class Confluence:
         if not attachments:
             return 0
 
-        att_dir = Path(dir_path) / 'attachments' / page_id
+        page_title = self.get_page_by_id(page_id)['title']
+        folder_name = self.secure_string(f'{page_title}_{page_id}')
+        att_dir = Path(dir_path) / 'attachments' / folder_name
         att_dir.mkdir(exist_ok=True, parents=True)
         downloaded = 0
 
