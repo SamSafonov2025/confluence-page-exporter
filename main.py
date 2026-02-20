@@ -86,6 +86,49 @@ class Confluence:
 
         return pages
 
+    def get_page_attachments(self, page_id: str) -> list:
+        ''' Get all attachments for a page '''
+        api = f'{self.url}/rest/api/content/{page_id}/child/attachment'
+        try:
+            return self._request(api).json().get('results', [])
+        except (requests.exceptions.HTTPError, SystemExit):
+            logging.warning('Failed to get attachments for page %s', page_id)
+            return []
+
+    def download_attachments(self, page_id: str, dir_path: Path | str) -> int:
+        ''' Download all attachments for a page into dir_path/attachments '''
+        attachments = self.get_page_attachments(page_id)
+        if not attachments:
+            return 0
+
+        att_dir = Path(dir_path) / 'attachments'
+        att_dir.mkdir(exist_ok=True, parents=True)
+        downloaded = 0
+
+        for att in attachments:
+            title = att.get('title', '')
+            download_link = att.get('_links', {}).get('download', '')
+            if not download_link:
+                logging.warning('No download link for attachment "%s"', title)
+                continue
+
+            file_name = self.secure_string(title) or f'attachment_{att["id"]}'
+            url = f'{self.url}{download_link}'
+
+            try:
+                content = self._request(url).content
+                with open(att_dir / file_name, 'wb') as file:
+                    file.write(content)
+                logging.info('Attachment "%s" saved for page %s', title, page_id)
+                downloaded += 1
+            except (requests.exceptions.HTTPError, SystemExit):
+                logging.warning('Failed to download attachment "%s" for page %s',
+                                title, page_id)
+            except OSError:
+                logging.warning('Filename error for attachment "%s"', title)
+
+        return downloaded
+
     def get_page_versions(self, page_id: str) -> list:
         ''' Get all versions of a page '''
         api = f'{self.url}/rest/api/content/{page_id}/version'
@@ -169,7 +212,8 @@ class Confluence:
             logging.warning('Filename error: page ID - %s', page_id)
 
     def export_page(self, page_id: str, dir_path: Path | str,
-                    fmt: str = 'doc', export_versions: bool = False) -> None:
+                    fmt: str = 'doc', export_versions: bool = False,
+                    export_attachments: bool = False) -> None:
         ''' Export a single page in the given format, optionally with version history '''
         logging.info('Exporting page %s as %s to %s', page_id, fmt, dir_path)
         if fmt == 'markdown':
@@ -185,6 +229,9 @@ class Confluence:
                         self.page_to_markdown(page_id, ver_dir, version=ver_num)
         else:
             self.page_to_doc(page_id, dir_path)
+
+        if export_attachments:
+            self.download_attachments(page_id, dir_path)
 
     def build_page_path(self, page_id: str, root_page_id: str,
                         output_dir: Path) -> Path:
@@ -226,6 +273,7 @@ def main():
     output_dir = Path(__file__).parent / 'output'
     export_format = config.get('format', 'doc')
     export_versions = config.get('export_versions', False)
+    export_attachments = config.get('export_attachments', False)
     page_ids = config.get('pageIds', [config['pageId']])
 
     if 'login' in config:
@@ -240,6 +288,7 @@ def main():
     logging.info('Auth method: %s', auth_method)
     logging.info('Export format: %s', export_format)
     logging.info('Export versions: %s', export_versions)
+    logging.info('Export attachments: %s', export_attachments)
     logging.info('Page IDs to process: %s', page_ids)
     logging.info('Output directory: %s', output_dir)
 
@@ -258,7 +307,8 @@ def main():
 
         confluence.export_page(root_page_id, output_dir,
                                fmt=export_format,
-                               export_versions=export_versions)
+                               export_versions=export_versions,
+                               export_attachments=export_attachments)
         total_exported += 1
 
         for page in pages:
@@ -266,7 +316,8 @@ def main():
                 page['id'], root_page_id, output_dir)
             confluence.export_page(page['id'], dir_path,
                                    fmt=export_format,
-                                   export_versions=export_versions)
+                                   export_versions=export_versions,
+                                   export_attachments=export_attachments)
             total_exported += 1
 
     logging.info('Export complete: %d pages exported', total_exported)
