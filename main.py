@@ -25,11 +25,22 @@ class Confluence:
         self.converter.ignore_links = False
         self.converter.body_width = 0
 
+    def _request(self, url: str, **kwargs) -> requests.Response:
+        ''' Make a GET request and check for errors '''
+        result = self.session.get(url, **kwargs)
+        if result.status_code == 401:
+            raise SystemExit('Authentication failed (401). Check your credentials.')
+        if result.status_code == 403:
+            raise SystemExit('Access denied (403). Check your permissions.')
+        if result.status_code != 200:
+            logging.error('HTTP %s for %s', result.status_code, url)
+            result.raise_for_status()
+        return result
+
     def get_page_by_id(self, page_id: str) -> dict:
         ''' Get page by ID '''
         api = f'{self.url}/wiki/api/v2/pages/{page_id}'
-        result = self.session.get(api)
-        return result.json()
+        return self._request(api).json()
 
     def get_page_content(self, page_id: str, version: int | None = None) -> dict:
         ''' Get page content with body and metadata '''
@@ -38,20 +49,17 @@ class Confluence:
         if version is not None:
             params["status"] = "historical"
             params["version"] = version
-        result = self.session.get(api, params=params)
-        return result.json()
+        return self._request(api, params=params).json()
 
     def get_page_ancestors(self, page_id: str) -> list:
         ''' Returns all ancestors for a given page by ID '''
         api = f'{self.url}/wiki/api/v2/pages/{page_id}/ancestors'
-        result = self.session.get(api)
-        return result.json()['results']
+        return self._request(api).json()['results']
 
     def get_page_children(self, page_id: str) -> list:
         ''' Returns all child pages for given page ID '''
         api = f'{self.url}/wiki/api/v2/pages/{page_id}/children'
-        result = self.session.get(api)
-        return result.json()['results']
+        return self._request(api).json()['results']
 
     def get_all_child_pages(self, page_id: str) -> list:
         ''' Returns all child pages for given page ID '''
@@ -71,11 +79,11 @@ class Confluence:
     def get_page_versions(self, page_id: str) -> list:
         ''' Get all versions of a page '''
         api = f'{self.url}/wiki/rest/api/content/{page_id}/version'
-        result = self.session.get(api)
-        if result.status_code == 200:
-            return result.json().get('results', [])
-        logging.warning('Failed to get versions for page %s', page_id)
-        return []
+        try:
+            return self._request(api).json().get('results', [])
+        except (requests.exceptions.HTTPError, SystemExit):
+            logging.warning('Failed to get versions for page %s', page_id)
+            return []
 
     def secure_string(self, string: str) -> str:
         ''' Remove characters that might affect the filename '''
@@ -89,7 +97,7 @@ class Confluence:
         file_name = self.secure_string(f'{page_title}_{page_id}.doc')
         export_api = f'{self.url}/wiki/exportword?pageId={page_id}'
 
-        content = self.session.get(export_api).content
+        content = self._request(export_api).content
         Path(dir_path).mkdir(exist_ok=True, parents=True)
 
         try:
