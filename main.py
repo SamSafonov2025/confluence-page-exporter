@@ -17,6 +17,9 @@ class Confluence:
         self.url = url.rstrip('/')
         self.username = username
         self.password = password
+        self._authenticated = False
+
+        logging.info('Connecting to %s as "%s"', self.url, username)
 
         self.session = requests.Session()
         self.session.auth = (username, password)
@@ -27,7 +30,10 @@ class Confluence:
 
     def _request(self, url: str, **kwargs) -> requests.Response:
         ''' Make a GET request and check for errors '''
+        logging.debug('GET %s', url)
         result = self.session.get(url, **kwargs)
+        logging.debug('Response: %s (%s bytes)', result.status_code, len(result.content))
+
         if result.status_code == 401:
             raise SystemExit('Authentication failed (401). Check your credentials.')
         if result.status_code == 403:
@@ -35,6 +41,11 @@ class Confluence:
         if result.status_code != 200:
             logging.error('HTTP %s for %s', result.status_code, url)
             result.raise_for_status()
+
+        if not self._authenticated:
+            self._authenticated = True
+            logging.info('Authentication successful')
+
         return result
 
     def get_page_by_id(self, page_id: str) -> dict:
@@ -64,13 +75,11 @@ class Confluence:
     def get_all_child_pages(self, page_id: str) -> list:
         ''' Returns all child pages for given page ID '''
         children = self.get_page_children(page_id)
+        logging.debug('Page %s has %d children', page_id, len(children))
         pages = []
 
         for child in children:
-            sys.stdout.write('Add ID ' + child['id'])
-            sys.stdout.flush()
-            sys.stdout.write('\r')
-
+            logging.info('Found child page: %s (ID: %s)', child.get('title', '?'), child['id'])
             pages.append(child)
             pages.extend(self.get_all_child_pages(child['id']))
 
@@ -80,7 +89,9 @@ class Confluence:
         ''' Get all versions of a page '''
         api = f'{self.url}/wiki/rest/api/content/{page_id}/version'
         try:
-            return self._request(api).json().get('results', [])
+            versions = self._request(api).json().get('results', [])
+            logging.info('Page %s has %d versions', page_id, len(versions))
+            return versions
         except (requests.exceptions.HTTPError, SystemExit):
             logging.warning('Failed to get versions for page %s', page_id)
             return []
@@ -159,6 +170,7 @@ class Confluence:
     def export_page(self, page_id: str, dir_path: Path | str,
                     fmt: str = 'doc', export_versions: bool = False) -> None:
         ''' Export a single page in the given format, optionally with version history '''
+        logging.info('Exporting page %s as %s to %s', page_id, fmt, dir_path)
         if fmt == 'markdown':
             self.page_to_markdown(page_id, dir_path)
             if export_versions:
@@ -212,31 +224,45 @@ def main():
     except (json.decoder.JSONDecodeError, KeyError, AttributeError) as e:
         sys.exit(f'Invalid config.json: {e}')
 
+    logging.info('Config loaded successfully')
+
     output_dir = Path(__file__).parent / 'output'
     export_format = config.get('format', 'doc')
     export_versions = config.get('export_versions', False)
     page_ids = config.get('pageIds', [config['pageId']])
 
     if 'login' in config:
+        auth_method = 'login/password'
         username = config['login']
         password = config['password']
     else:
+        auth_method = 'email/token'
         username = config['email']
         password = config['token']
+
+    logging.info('Auth method: %s', auth_method)
+    logging.info('Export format: %s', export_format)
+    logging.info('Export versions: %s', export_versions)
+    logging.info('Page IDs to process: %s', page_ids)
+    logging.info('Output directory: %s', output_dir)
 
     confluence = Confluence(
         url=config['url'],
         username=username,
         password=password)
 
+    total_exported = 0
+
     for root_page_id in page_ids:
         logging.info('Processing root page %s', root_page_id)
 
         pages = confluence.get_all_child_pages(root_page_id)
+        logging.info('Found %d child pages for root %s', len(pages), root_page_id)
 
         confluence.export_page(root_page_id, output_dir,
                                fmt=export_format,
                                export_versions=export_versions)
+        total_exported += 1
 
         for page in pages:
             dir_path = confluence.build_page_path(
@@ -244,8 +270,9 @@ def main():
             confluence.export_page(page['id'], dir_path,
                                    fmt=export_format,
                                    export_versions=export_versions)
+            total_exported += 1
 
-    logging.info('Export complete')
+    logging.info('Export complete: %d pages exported', total_exported)
 
 
 if __name__ == '__main__':
