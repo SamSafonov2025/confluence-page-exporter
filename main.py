@@ -69,9 +69,21 @@ class Confluence:
         return data.get('ancestors', [])
 
     def get_page_children(self, page_id: str) -> list:
-        ''' Returns all child pages for given page ID '''
+        ''' Returns all child pages for given page ID (with pagination) '''
         api = f'{self.url}/rest/api/content/{page_id}/child/page'
-        return self._request(api).json()['results']
+        results = []
+        start = 0
+        limit = 100
+
+        while True:
+            data = self._request(api, params={"start": start, "limit": limit}).json()
+            batch = data.get('results', [])
+            results.extend(batch)
+            if len(batch) < limit:
+                break
+            start += limit
+
+        return results
 
     def get_all_child_pages(self, page_id: str) -> list:
         ''' Returns all child pages for given page ID '''
@@ -87,13 +99,25 @@ class Confluence:
         return pages
 
     def get_page_attachments(self, page_id: str) -> list:
-        ''' Get all attachments for a page '''
+        ''' Get all attachments for a page (with pagination) '''
         api = f'{self.url}/rest/api/content/{page_id}/child/attachment'
+        results = []
+        start = 0
+        limit = 100
+
         try:
-            return self._request(api).json().get('results', [])
+            while True:
+                data = self._request(
+                    api, params={"start": start, "limit": limit}).json()
+                batch = data.get('results', [])
+                results.extend(batch)
+                if len(batch) < limit:
+                    break
+                start += limit
         except (requests.exceptions.HTTPError, SystemExit):
             logging.warning('Failed to get attachments for page %s', page_id)
-            return []
+
+        return results
 
     def download_attachments(self, page_id: str, dir_path: Path | str) -> int:
         ''' Download all attachments for a page directly into dir_path '''
